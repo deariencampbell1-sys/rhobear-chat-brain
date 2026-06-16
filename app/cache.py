@@ -103,10 +103,17 @@ class SemanticCache:
             )
             if cursor.rowcount == 0:
                 return False
-            row_id = cursor.lastrowid
+            # Fetch the row id explicitly; cursor.lastrowid can be unreliable on
+            # the OR IGNORE code path across sqlite driver versions.
+            row = self.conn.execute(
+                "SELECT id FROM cache_entries WHERE question_hash = ?",
+                (question_hash,),
+            ).fetchone()
+            if row is None:
+                return False
             self.conn.execute(
                 "INSERT OR IGNORE INTO cache_vectors (rowid, embedding) VALUES (?, ?)",
-                (row_id, serialize_f32(embedding)),
+                (row[0], serialize_f32(embedding)),
             )
         return True
 
