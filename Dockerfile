@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY requirements.txt .
 COPY scripts/export_onnx.py ./scripts/
-RUN pip install --no-cache-dir -r requirements.txt "optimum[onnxruntime]" onnx \
+RUN pip install --no-cache-dir -r requirements.txt "optimum[onnxruntime]" onnx onnxscript \
     && python ./scripts/export_onnx.py \
     && find /build/onnx-model -type f -printf '%p\n' | head -20
 
