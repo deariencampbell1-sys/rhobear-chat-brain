@@ -40,7 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && useradd --create-home --shell /bin/bash chatbrain
 
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=builder /usr/local/lib/python3.11/bin /usr/local/bin
+COPY --from=builder /usr/local/bin /usr/local/bin
 COPY --from=builder /build/.cache /app/.cache
 
 COPY app ./app
