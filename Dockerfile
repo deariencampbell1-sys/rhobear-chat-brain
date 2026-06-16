@@ -9,19 +9,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-ENV HF_HOME=/build/.cache/huggingface
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-en-v1.5', device='cpu')"
-
-RUN find /usr/local/lib/python3.11/site-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
-    && find /usr/local/lib/python3.11/site-packages -name '*.pyc' -delete \
-    && rm -rf /usr/local/lib/python3.11/site-packages/torch/share \
-              /usr/local/lib/python3.11/site-packages/torch/include \
-              /usr/local/lib/python3.11/site-packages/sklearn/tests \
-              /usr/local/lib/python3.11/site-packages/scipy/tests \
-    && find /usr/local/lib/python3.11/site-packages/transformers/models -mindepth 1 -maxdepth 1 \
-       ! -name 'bert' ! -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
+COPY scripts/export_onnx.py ./scripts/
+RUN pip install --no-cache-dir -r requirements.txt optimum onnx onnxruntime \
+    && python ./scripts/export_onnx.py \
+    && find /build/onnx-model -type f -printf '%p\n' | head -20
 
 FROM python:3.11-slim AS runtime
 
@@ -32,17 +23,20 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=8000 \
     DATA_DIR=/app/data \
     SEEDS_PATH=/app/seeds/sales-faq.jsonl \
-    HF_HOME=/app/.cache/huggingface
+    ONNX_MODEL_DIR=/app/onnx-model
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --shell /bin/bash chatbrain
 
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
-COPY --from=builder /build/.cache /app/.cache
+COPY requirements-docker.txt .
+RUN pip install --no-cache-dir -r requirements-docker.txt \
+    && find /usr/local/lib/python3.11/site-packages/transformers/models -mindepth 1 -maxdepth 1 \
+       ! -name 'bert' ! -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true \
+    && find /usr/local/lib/python3.11/site-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
+COPY --from=builder /build/onnx-model /app/onnx-model
 COPY app ./app
 COPY seeds ./seeds
 

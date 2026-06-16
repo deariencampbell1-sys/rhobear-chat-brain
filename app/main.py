@@ -33,6 +33,7 @@ async def lifespan(app: FastAPI):
         settings.embedding_model,
         test_mode=test_mode,
         dim=settings.embedding_dim,
+        onnx_model_dir=settings.onnx_model_dir,
     )
 
     pairs = load_seed_file(settings.seeds_path)

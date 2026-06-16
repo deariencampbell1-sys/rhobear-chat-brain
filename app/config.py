@@ -13,6 +13,7 @@ class Settings:
     seeds_path: Path
     embedding_model: str
     embedding_dim: int
+    onnx_model_dir: Path | None
 
     @property
     def cache_db_path(self) -> Path:
@@ -40,4 +41,9 @@ def load_settings() -> Settings:
         seeds_path=seeds_path,
         embedding_model=os.environ.get("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5"),
         embedding_dim=int(os.environ.get("EMBEDDING_DIM", "384")),
+        onnx_model_dir=(
+            Path(onnx_dir)
+            if (onnx_dir := os.environ.get("ONNX_MODEL_DIR", "")).strip()
+            else None
+        ),
     )
