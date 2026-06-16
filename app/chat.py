@@ -18,11 +18,18 @@ TOKENS_PER_SECOND = 40
 TOKEN_INTERVAL_SEC = 1.0 / TOKENS_PER_SECOND
 
 
-def extract_prompt(messages: list[dict[str, Any]]) -> str:
-    user_messages = [m.get("content", "") for m in messages if m.get("role") == "user"]
+def extract_prompt(messages: list[Any]) -> str:
+    if not isinstance(messages, list):
+        return ""
+    user_messages: list[str] = []
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        if m.get("role") == "user":
+            user_messages.append(str(m.get("content", "")))
     if not user_messages:
         return ""
-    return str(user_messages[-1]).strip()
+    return user_messages[-1].strip()
 
 
 def prompt_hash(prompt: str) -> str:
@@ -156,9 +163,14 @@ async def handle_chat_completions(
 
         return JSONResponse(make_completion_response(answer, "rhobear-cache"))
 
-    async def on_miss_complete(response_text: str, upstream_model: str) -> None:
+    async def on_miss_complete(
+        response_text: str,
+        upstream_model: str,
+        tokens_out: int | None = None,
+    ) -> None:
         elapsed_ms = (time.perf_counter() - started) * 1000
-        tokens_out = max(1, len(response_text.split())) if response_text else 1
+        if tokens_out is None:
+            tokens_out = max(1, len(response_text.split())) if response_text else 1
         request_logger.log(
             RequestRecord(
                 ts=time.time(),
@@ -173,20 +185,28 @@ async def handle_chat_completions(
 
     if stream:
         async def stream_proxy() -> AsyncIterator[bytes]:
-            collected: list[str] = []
+            # Incrementally track upstream model and a rough token count instead of
+            # buffering the entire response in memory.
             upstream_model = model
+            tokens_out = 0
+            line_buffer = ""
             async for chunk in proxy_upstream_stream(http_client, upstream_url, body):
-                collected.append(chunk.decode("utf-8", errors="replace"))
+                tokens_out += max(1, len(chunk) // 4)
+                # Parse just the first data-line we see to learn the upstream model.
+                if upstream_model == model:
+                    line_buffer += chunk.decode("utf-8", errors="replace")
+                    while "\n" in line_buffer:
+                        head, _, line_buffer = line_buffer.partition("\n")
+                        head = head.strip()
+                        if head.startswith("data: ") and head != "data: [DONE]":
+                            try:
+                                payload = json.loads(head[6:])
+                                upstream_model = payload.get("model", upstream_model)
+                            except json.JSONDecodeError:
+                                pass
+                            break
                 yield chunk
-            text = "".join(collected)
-            for line in text.split("\n"):
-                if line.startswith("data: ") and line != "data: [DONE]":
-                    try:
-                        payload = json.loads(line[6:])
-                        upstream_model = payload.get("model", upstream_model)
-                    except json.JSONDecodeError:
-                        pass
-            await on_miss_complete(text, upstream_model)
+            await on_miss_complete("", upstream_model, tokens_out=max(1, tokens_out))
 
         return StreamingResponse(stream_proxy(), media_type="text/event-stream")
 

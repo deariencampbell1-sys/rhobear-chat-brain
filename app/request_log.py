@@ -54,6 +54,8 @@ class RequestLogger:
             self._conn = None
 
     def is_reachable(self) -> bool:
+        if self._conn is None:
+            return False
         try:
             self.conn.execute("SELECT 1").fetchone()
             return True

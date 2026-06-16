@@ -54,7 +54,8 @@ app = FastAPI(title="rhobear-chat-brain", lifespan=lifespan)
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request) -> Any:
     body = await request.json()
-    assert http_client is not None and embedder is not None
+    if http_client is None or embedder is None:
+        raise HTTPException(status_code=503, detail="Service not ready")
     return await handle_chat_completions(
         request,
         body,
@@ -77,17 +78,26 @@ async def healthz() -> JSONResponse:
     cache_ok = cache.is_reachable()
     requests_ok = request_logger.is_reachable()
     upstream_ok = False
-    assert http_client is not None
+    if http_client is None:
+        return JSONResponse(
+            {
+                "status": "degraded",
+                "cache": cache_ok,
+                "requests_log": requests_ok,
+                "llama_upstream": False,
+            },
+            status_code=503,
+        )
     try:
         response = await http_client.get(
             f"{settings.llama_upstream.rstrip('/')}/health",
             timeout=2.0,
         )
-        upstream_ok = response.status_code < 500
+        upstream_ok = 200 <= response.status_code < 300
     except httpx.HTTPError:
         try:
             response = await http_client.get(settings.llama_upstream, timeout=2.0)
-            upstream_ok = response.status_code < 500
+            upstream_ok = 200 <= response.status_code < 300
         except httpx.HTTPError:
             upstream_ok = False
 
@@ -114,24 +124,47 @@ async def admin_seed(
     if x_admin_token != settings.admin_token:
         raise HTTPException(status_code=401, detail="Invalid admin token")
 
-    body = await request.body()
+    raw = await request.body()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"Body is not valid UTF-8: {exc}") from exc
+
     pairs = []
-    for line in body.decode("utf-8").splitlines():
+    errors: list[dict[str, str]] = []
+    for line_no, line in enumerate(text.splitlines(), start=1):
         line = line.strip()
         if not line:
             continue
-        data = json.loads(line)
+        try:
+            data = json.loads(line)
+            question = data["q"]
+            answer = data["a"]
+        except json.JSONDecodeError as exc:
+            errors.append({"line": str(line_no), "error": f"invalid JSON: {exc.msg}"})
+            continue
+        except KeyError as exc:
+            errors.append({"line": str(line_no), "error": f"missing key: {exc.args[0]}"})
+            continue
         from app.seed import SeedPair
 
         pairs.append(
             SeedPair(
-                question=data["q"],
-                answer=data["a"],
+                question=question,
+                answer=answer,
                 thought=data.get("thought"),
             )
         )
 
-    assert embedder is not None
+    if errors:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Malformed seed lines", "errors": errors},
+        )
+
+    if embedder is None:
+        raise HTTPException(status_code=503, detail="Service not ready")
+
     result = seed_cache(cache, embedder, pairs)
     return {"status": "ok", **result}
 

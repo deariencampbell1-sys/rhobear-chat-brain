@@ -66,6 +66,8 @@ class SemanticCache:
             self._conn = None
 
     def is_reachable(self) -> bool:
+        if self._conn is None:
+            return False
         try:
             self.conn.execute("SELECT 1").fetchone()
             return True
@@ -91,20 +93,19 @@ class SemanticCache:
         thought: str | None,
         embedding: list[float],
     ) -> bool:
-        if self.has_hash(question_hash):
-            return False
-
         with self.conn:
             cursor = self.conn.execute(
                 """
-                INSERT INTO cache_entries (question_hash, question, answer, thought)
+                INSERT OR IGNORE INTO cache_entries (question_hash, question, answer, thought)
                 VALUES (?, ?, ?, ?)
                 """,
                 (question_hash, question, answer, thought),
             )
+            if cursor.rowcount == 0:
+                return False
             row_id = cursor.lastrowid
             self.conn.execute(
-                "INSERT INTO cache_vectors (rowid, embedding) VALUES (?, ?)",
+                "INSERT OR IGNORE INTO cache_vectors (rowid, embedding) VALUES (?, ?)",
                 (row_id, serialize_f32(embedding)),
             )
         return True
