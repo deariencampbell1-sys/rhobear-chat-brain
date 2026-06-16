@@ -1,0 +1,1 @@
+"""rhobear-chat-brain: OpenAI-compatible chat gateway with semantic cache."""
