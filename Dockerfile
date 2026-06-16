@@ -16,7 +16,6 @@ RUN pip install --no-cache-dir -r requirements.txt \
               /usr/local/lib/python3.11/site-packages/torch/include \
               /usr/local/lib/python3.11/site-packages/torch/_inductor \
               /usr/local/lib/python3.11/site-packages/torch/testing \
-              /usr/local/lib/python3.11/site-packages/torch/distributed \
               /usr/local/lib/python3.11/site-packages/sklearn/tests \
               /usr/local/lib/python3.11/site-packages/scipy/tests \
     && find /usr/local/lib/python3.11/site-packages/transformers/models -mindepth 1 -maxdepth 1 \
