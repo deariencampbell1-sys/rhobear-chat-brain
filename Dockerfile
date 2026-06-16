@@ -9,20 +9,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt \
-    && find /usr/local/lib/python3.11/site-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
+RUN pip install --no-cache-dir -r requirements.txt
+
+ENV HF_HOME=/build/.cache/huggingface
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-en-v1.5', device='cpu')"
+
+RUN find /usr/local/lib/python3.11/site-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib/python3.11/site-packages -name '*.pyc' -delete \
     && rm -rf /usr/local/lib/python3.11/site-packages/torch/share \
               /usr/local/lib/python3.11/site-packages/torch/include \
-              /usr/local/lib/python3.11/site-packages/torch/_inductor \
-              /usr/local/lib/python3.11/site-packages/torch/testing \
               /usr/local/lib/python3.11/site-packages/sklearn/tests \
               /usr/local/lib/python3.11/site-packages/scipy/tests \
     && find /usr/local/lib/python3.11/site-packages/transformers/models -mindepth 1 -maxdepth 1 \
        ! -name 'bert' ! -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
-
-ENV HF_HOME=/build/.cache/huggingface
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-en-v1.5', device='cpu')"
 
 FROM python:3.11-slim AS runtime
 
@@ -41,7 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && useradd --create-home --shell /bin/bash chatbrain
 
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder /usr/local/lib/python3.11/bin /usr/local/bin
 COPY --from=builder /build/.cache /app/.cache
 
 COPY app ./app
