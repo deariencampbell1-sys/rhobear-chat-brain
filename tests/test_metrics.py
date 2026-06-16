@@ -12,7 +12,7 @@ def _chat(app_client, content: str) -> None:
 def test_metrics_json_shape_after_requests(app_client) -> None:
     for i in range(10):
         if i % 2 == 0:
-            _chat(app_client, "What model do you use?")
+            _chat(app_client, "How much is the Done-For-You package?")
         else:
             _chat(app_client, f"Novel question number {i} about zorbplix")
 

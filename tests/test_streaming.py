@@ -46,7 +46,7 @@ def test_cache_hit_sse_format(app_client) -> None:
         "/v1/chat/completions",
         json={
             "model": "test",
-            "messages": [{"role": "user", "content": "What model do you use?"}],
+            "messages": [{"role": "user", "content": "Is RHOBEAR a subscription?"}],
             "stream": True,
         },
     ) as response:

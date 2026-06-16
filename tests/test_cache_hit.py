@@ -6,8 +6,8 @@ import pytest
 @pytest.mark.parametrize(
     "question",
     [
-        "What model do you use?",
-        "How does this chatbot work?",
+        "How much is RHOBEAR DIY?",
+        "Does RHOBEAR run locally or in the cloud?",
     ],
 )
 def test_cache_hit_returns_cached_answer(app_client, question: str) -> None:
@@ -35,7 +35,7 @@ def test_cache_hit_under_200ms_for_seeded_model_question(app_client) -> None:
         "/v1/chat/completions",
         json={
             "model": "test",
-            "messages": [{"role": "user", "content": "What model do you use?"}],
+            "messages": [{"role": "user", "content": "Does RHOBEAR run locally or in the cloud?"}],
             "stream": False,
         },
     )
@@ -43,5 +43,5 @@ def test_cache_hit_under_200ms_for_seeded_model_question(app_client) -> None:
 
     assert response.status_code == 200
     content = response.json()["choices"][0]["message"]["content"]
-    assert "llama.cpp" in content.lower()
+    assert "ollama" in content.lower()
     assert elapsed_ms < 200

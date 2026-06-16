@@ -7,7 +7,7 @@ def test_seed_loader_is_idempotent(app_client) -> None:
     response = app_client.post(
         "/admin/seed",
         headers={"X-Admin-Token": "test-admin-token"},
-        content='{"q": "How does this chatbot work?", "a": "duplicate"}\n',
+        content='{"q": "How much is RHOBEAR DIY?", "a": "duplicate"}\n',
     )
     assert response.status_code == 200
     assert response.json()["inserted"] == 0
