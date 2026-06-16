@@ -4,6 +4,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from onnxruntime.quantization import QuantType, quantize_dynamic
+
 
 def main() -> None:
     out = Path("/build/onnx-model")
@@ -27,11 +29,18 @@ def main() -> None:
     if not onnx_files:
         raise RuntimeError(f"No ONNX files exported to {out}")
 
-    target = out / "model.onnx"
-    if onnx_files[0] != target:
-        shutil.move(str(onnx_files[0]), target)
+    raw_model = out / "model.raw.onnx"
+    shutil.move(str(onnx_files[0]), raw_model)
 
-    print(f"Exported ONNX model to {target}")
+    target = out / "model.onnx"
+    quantize_dynamic(
+        str(raw_model),
+        str(target),
+        weight_type=QuantType.QInt8,
+    )
+    raw_model.unlink(missing_ok=True)
+
+    print(f"Exported quantized ONNX model to {target}")
 
 
 if __name__ == "__main__":

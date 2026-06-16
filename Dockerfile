@@ -34,7 +34,12 @@ COPY requirements-docker.txt .
 RUN pip install --no-cache-dir -r requirements-docker.txt \
     && find /usr/local/lib/python3.11/site-packages/transformers/models -mindepth 1 -maxdepth 1 \
        ! -name 'bert' ! -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true \
-    && find /usr/local/lib/python3.11/site-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+    && find /usr/local/lib/python3.11/site-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
+    && rm -rf /usr/local/lib/python3.11/site-packages/sympy \
+              /usr/local/lib/python3.11/site-packages/mpmath \
+              /usr/local/lib/python3.11/site-packages/pip \
+              /usr/local/lib/python3.11/site-packages/setuptools \
+              /usr/local/lib/python3.11/site-packages/hf_xet
 
 COPY --from=builder /build/onnx-model /app/onnx-model
 COPY app ./app
