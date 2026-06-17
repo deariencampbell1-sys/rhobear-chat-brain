@@ -1,0 +1,44 @@
+name: uptime-monitor
+
+# Pings every public RHOBEAR surface every 5 minutes. Pages the owner on
+# Telegram (TELEGRAM_BOT_TOKEN secret) if any surface returns non-2xx.
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'   # every 5 min
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping all 6 surfaces, alert on any non-2xx
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: '7939675204'
+        run: |
+          set +e
+          FAIL=()
+          for url in \
+            https://rhobear.ai/ \
+            https://brain.rhobear.ai/healthz \
+            https://apollo.rhobear.ai/healthz \
+            https://chat.rhobear.ai/health \
+            https://sales.rhobear.ai/ \
+            https://reviews.rhobear.ai/ ; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$url")
+            echo "$url -> $code"
+            if [[ ! "$code" =~ ^2[0-9][0-9]$ ]]; then
+              FAIL+=("$url HTTP $code")
+            fi
+          done
+          if [ ${#FAIL[@]} -gt 0 ]; then
+            MSG="🚨 RHOBEAR uptime — $(date -u +%Y-%m-%dT%H:%M:%SZ)"$'\n'
+            for f in "${FAIL[@]}"; do MSG="$MSG"$'\n'"• $f"; done
+            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+              -d "chat_id=${TG_CHAT}" \
+              --data-urlencode "text=${MSG}" > /dev/null
+            exit 1
+          fi
