@@ -12,6 +12,14 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.cache import CacheMatch, SemanticCache
 from app.embeddings import Embedder
+from app.providers import (
+    BaseProvider,
+    ChainProvider,
+    LlamaProvider,
+    MiniMaxProvider,
+    build_chain,
+    classify_task,
+)
 from app.request_log import RequestLogger, RequestRecord
 
 TOKENS_PER_SECOND = 40
@@ -106,15 +114,19 @@ async def _async_sleep(seconds: float) -> None:
     await asyncio.sleep(seconds)
 
 
-async def proxy_upstream_stream(
-    client: httpx.AsyncClient,
-    url: str,
-    body: dict[str, Any],
-) -> AsyncIterator[bytes]:
-    async with client.stream("POST", url, json=body, timeout=120.0) as response:
-        response.raise_for_status()
-        async for chunk in response.aiter_bytes():
-            yield chunk
+def build_providers(
+    *,
+    minimax_api_key: str,
+    minimax_base_url: str,
+    minimax_fast_model: str,
+    minimax_thinker_model: str,
+    llama_upstream: str,
+) -> tuple[MiniMaxProvider, MiniMaxProvider, LlamaProvider]:
+    """Construct the three provider instances we use in the chain."""
+    fast = MiniMaxProvider(minimax_fast_model, minimax_api_key, minimax_base_url)
+    thinker = MiniMaxProvider(minimax_thinker_model, minimax_api_key, minimax_base_url)
+    local = LlamaProvider(llama_upstream)
+    return fast, thinker, local
 
 
 async def handle_chat_completions(
@@ -124,9 +136,11 @@ async def handle_chat_completions(
     cache: SemanticCache,
     embedder: Embedder,
     request_logger: RequestLogger,
-    upstream_url: str,
     cache_threshold: float,
     http_client: httpx.AsyncClient,
+    fast_provider: BaseProvider,
+    thinker_provider: BaseProvider,
+    local_provider: BaseProvider,
 ) -> JSONResponse | StreamingResponse:
     started = time.perf_counter()
     messages = body.get("messages", [])
@@ -163,10 +177,20 @@ async def handle_chat_completions(
 
         return JSONResponse(make_completion_response(answer, "rhobear-cache"))
 
+    # Cache miss: classify task, build provider chain, call.
+    task = classify_task(prompt)
+    chain = build_chain(
+        task,
+        fast_provider=fast_provider,
+        thinker_provider=thinker_provider,
+        local_provider=local_provider,
+    )
+
     async def on_miss_complete(
         response_text: str,
         upstream_model: str,
         tokens_out: int | None = None,
+        provider_name: str = "",
     ) -> None:
         elapsed_ms = (time.perf_counter() - started) * 1000
         if tokens_out is None:
@@ -179,41 +203,65 @@ async def handle_chat_completions(
                 similarity_score=None,
                 response_ms=elapsed_ms,
                 tokens_out=tokens_out,
-                model_used=upstream_model,
+                model_used=upstream_model or provider_name,
             )
         )
 
     if stream:
-        async def stream_proxy() -> AsyncIterator[bytes]:
-            # Incrementally track upstream model and a rough token count instead of
-            # buffering the entire response in memory.
+        async def stream_chain() -> AsyncIterator[bytes]:
             upstream_model = model
             tokens_out = 0
             line_buffer = ""
-            async for chunk in proxy_upstream_stream(http_client, upstream_url, body):
-                tokens_out += max(1, len(chunk) // 4)
-                # Parse just the first data-line we see to learn the upstream model.
-                if upstream_model == model:
-                    line_buffer += chunk.decode("utf-8", errors="replace")
-                    while "\n" in line_buffer:
-                        head, _, line_buffer = line_buffer.partition("\n")
-                        head = head.strip()
-                        if head.startswith("data: ") and head != "data: [DONE]":
-                            try:
-                                payload = json.loads(head[6:])
-                                upstream_model = payload.get("model", upstream_model)
-                            except json.JSONDecodeError:
-                                pass
-                            break
-                yield chunk
-            await on_miss_complete("", upstream_model, tokens_out=max(1, tokens_out))
+            provider_served = ""
+            # For streaming we only try the first provider in the chain.
+            # (Fallback after streaming has started is not feasible.)
+            first = chain.providers[0]
+            try:
+                async for chunk in first.stream(http_client, body):
+                    tokens_out += max(1, len(chunk) // 4)
+                    if upstream_model == model:
+                        line_buffer += chunk.decode("utf-8", errors="replace")
+                        while "\n" in line_buffer:
+                            head, _, line_buffer = line_buffer.partition("\n")
+                            head = head.strip()
+                            if head.startswith("data: ") and head != "data: [DONE]":
+                                try:
+                                    payload = json.loads(head[6:])
+                                    upstream_model = payload.get("model", upstream_model)
+                                except json.JSONDecodeError:
+                                    pass
+                                break
+                    yield chunk
+                provider_served = first.name
+            except Exception as e:  # noqa: BLE001
+                # First provider failed mid-stream: synthesize an error chunk
+                err = {
+                    "error": {
+                        "message": f"primary provider failed: {e}",
+                        "type": "upstream_error",
+                    }
+                }
+                yield f"data: {json.dumps(err)}\n\n".encode("utf-8")
+                yield b"data: [DONE]\n\n"
+            await on_miss_complete(
+                "", upstream_model, tokens_out=max(1, tokens_out), provider_name=provider_served,
+            )
 
-        return StreamingResponse(stream_proxy(), media_type="text/event-stream")
+        return StreamingResponse(stream_chain(), media_type="text/event-stream")
 
-    upstream_response = await http_client.post(upstream_url, json=body, timeout=120.0)
-    upstream_response.raise_for_status()
-    payload = upstream_response.json()
-    content = payload.get("choices", [{}])[0].get("message", {}).get("content", "")
-    upstream_model = payload.get("model", model)
-    await on_miss_complete(content, upstream_model)
-    return JSONResponse(payload)
+    # Non-streaming: full chain with fallback
+    try:
+        result = await chain.chat(http_client, body, timeout=60.0)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(
+            {"error": {"message": f"all providers failed: {e}", "type": "upstream_error"}},
+            status_code=502,
+        )
+    await on_miss_complete(result.content, result.model, provider_name=result.provider)
+    if result.raw is not None:
+        # Preserve the upstream response shape (id, created, usage, etc.) but
+        # surface the model + provider that actually answered.
+        result.raw["model"] = result.model
+        result.raw.setdefault("rhobear_provider", result.provider)
+        return JSONResponse(result.raw)
+    return JSONResponse(make_completion_response(result.content, result.model))
