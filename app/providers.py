@@ -17,8 +17,38 @@ appended by this provider. This matches the env keys used by Apollo
 """
 from __future__ import annotations
 from dataclasses import dataclass
+import os
 from typing import Any, AsyncIterator
 import httpx
+
+# --- Langfuse tracing (best-effort, never raises) ---
+try:
+    from langfuse import Langfuse
+    _lf = Langfuse() if os.environ.get("LANGFUSE_PUBLIC_KEY") else None
+except Exception as _lf_init_err:
+    _lf = None
+
+
+def _trace_generation(name, model, input_msgs, output_text, metadata=None):
+    """Emit a langfuse generation if the client is configured; swallow errors."""
+    if _lf is None:
+        return
+    try:
+        with _lf.start_as_current_observation(
+            as_type="generation",
+            name=name,
+            model=model,
+            input=input_msgs,
+            output=output_text,
+            metadata=metadata or {},
+        ) as gen:
+            try:
+                gen.update(output=output_text)
+            except Exception:
+                pass
+    except Exception:
+        # Tracing must never break the provider chain.
+        pass
 
 
 @dataclass
@@ -93,6 +123,13 @@ class MiniMaxProvider(BaseProvider):
                 .get("message", {})
                 .get("content", "")
             )
+            _trace_generation(
+                name="chat-brain.minimax.chat",
+                model=self.model,
+                input_msgs=payload.get("messages"),
+                output_text=content,
+                metadata={"provider": self.name, "stream": False},
+            )
             return ProviderResult(content=content, model=self.model, raw=data, provider=self.name)
         # Fall back to SSE assembly.
         content, _chunks = _assemble_sse(text)
@@ -105,14 +142,39 @@ class MiniMaxProvider(BaseProvider):
                 }
             ]
         }
+        _trace_generation(
+            name="chat-brain.minimax.chat",
+            model=self.model,
+            input_msgs=payload.get("messages"),
+            output_text=content,
+            metadata={"provider": self.name, "stream": False, "fallback": "sse"},
+        )
         return ProviderResult(content=content, model=self.model, raw=raw, provider=self.name)
 
     async def stream(self, client, body):
         payload = {**body, "model": self.model, "stream": True}
-        async with client.stream("POST", self._url(), json=payload, headers=self._headers(), timeout=60.0) as r:
-            r.raise_for_status()
-            async for chunk in r.aiter_bytes():
-                yield chunk
+        accumulated = []
+        try:
+            async with client.stream("POST", self._url(), json=payload, headers=self._headers(), timeout=60.0) as r:
+                r.raise_for_status()
+                async for chunk in r.aiter_bytes():
+                    if chunk:
+                        accumulated.append(chunk)
+                    yield chunk
+        finally:
+            # Best-effort tracing of the assembled stream content.
+            try:
+                blob = b"".join(accumulated).decode("utf-8", errors="replace")
+                content, _ = _assemble_sse(blob)
+                _trace_generation(
+                    name="chat-brain.minimax.stream",
+                    model=self.model,
+                    input_msgs=payload.get("messages"),
+                    output_text=content,
+                    metadata={"provider": self.name, "stream": True},
+                )
+            except Exception:
+                pass
 
 
 def _assemble_sse(body: str) -> tuple[str, int]:
@@ -171,14 +233,38 @@ class LlamaProvider(BaseProvider):
             .get("message", {})
             .get("content", "")
         )
+        _trace_generation(
+            name="chat-brain.llama.chat",
+            model=data.get("model", "llama"),
+            input_msgs=body.get("messages"),
+            output_text=content,
+            metadata={"provider": self.name, "stream": False},
+        )
         return ProviderResult(content=content, model=data.get("model", "llama"), raw=data, provider=self.name)
 
     async def stream(self, client, body):
         url = f"{self.upstream}/v1/chat/completions"
-        async with client.stream("POST", url, json=body, timeout=120.0) as r:
-            r.raise_for_status()
-            async for chunk in r.aiter_bytes():
-                yield chunk
+        accumulated = []
+        try:
+            async with client.stream("POST", url, json=body, timeout=120.0) as r:
+                r.raise_for_status()
+                async for chunk in r.aiter_bytes():
+                    if chunk:
+                        accumulated.append(chunk)
+                    yield chunk
+        finally:
+            try:
+                blob = b"".join(accumulated).decode("utf-8", errors="replace")
+                content, _ = _assemble_sse(blob)
+                _trace_generation(
+                    name="chat-brain.llama.stream",
+                    model=body.get("model", "llama"),
+                    input_msgs=body.get("messages"),
+                    output_text=content,
+                    metadata={"provider": self.name, "stream": True},
+                )
+            except Exception:
+                pass
 
 
 class ChainProvider(BaseProvider):

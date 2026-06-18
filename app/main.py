@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -54,6 +56,23 @@ async def lifespan(app: FastAPI):
     # Bring up the long-running pi session manager so Telegram / build
     # requests can hit a persistent pi process per chat.
     pi_mgr = get_manager()
+    # Langfuse tracing init (best-effort, never raises). The provider
+    # chain checks the LANGFUSE_PUBLIC_KEY env independently and no-ops
+    # cleanly when it's absent (e.g. local tests, dev). We do the same
+    # here at app-startup so a misconfigured host fails silently instead
+    # of blocking the service.
+    try:
+        if os.environ.get("LANGFUSE_PUBLIC_KEY"):
+            from langfuse import Langfuse  # local import: avoids hard dep at test time
+            _app_langfuse = Langfuse()
+            logging.getLogger("rhobear.chat_brain").info(
+                "langfuse: tracing enabled at startup (host=%s)",
+                os.environ.get("LANGFUSE_HOST", "default"),
+            )
+    except Exception as e:  # noqa: BLE001 — tracing must never break startup
+        logging.getLogger("rhobear.chat_brain").warning(
+            "langfuse: init failed at startup (%s); tracing disabled", e,
+        )
     try:
         yield
     finally:
