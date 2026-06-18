@@ -129,7 +129,9 @@ class PiSessionManager:
 
     def is_wipe_command(self, text: str) -> bool:
         # Strip @bot_username suffix if present
-        t = text.strip().split()[0].lower() if text.strip() else ""
+        first = text.strip().split()[0].lower() if text.strip() else ""
+        # /wipe@mybot → /wipe (Telegram slash-command convention)
+        t = first.split("@", 1)[0]
         return t in WIPE_COMMANDS
 
     def wipe(self, chat_id: str) -> str:

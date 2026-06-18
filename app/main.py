@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -11,11 +13,12 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.cache import SemanticCache
-from app.chat import build_providers, handle_chat_completions
+from app.chat import build_providers, extract_prompt, handle_chat_completions
 from app.config import Settings, load_settings
 from app.embeddings import get_embedder, reset_embedder
 from app.pi_session import get_manager
 from app.request_log import RequestLogger
+from app.safety import classify
 from app.seed import load_seed_file, seed_cache
 
 settings: Settings = load_settings()
@@ -91,6 +94,39 @@ async def chat_completions(request: Request) -> Any:
     body = await request.json()
     if http_client is None or embedder is None:
         raise HTTPException(status_code=503, detail="Service not ready")
+
+    # Pre-LLM safety filter — ported from rhobear-sales-chat/src/safety.py.
+    # Runs before retrieval/cache/LLM so the upstream model never sees the
+    # message and no lead capture is offered. Shape mirrors the rest of the
+    # chat completions response so downstream consumers (sales bubble, ops
+    # tooling) don't need to special-case the safety refusal.
+    user_msg = extract_prompt(body.get("messages", []))
+    decision = classify(user_msg)
+    if decision.category:
+        return JSONResponse(
+            {
+                "id": f"chatcmpl-safety-{uuid.uuid4().hex[:24]}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": "rhobear-safety-refusal",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": decision.response or "",
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+            }
+        )
+
     return await handle_chat_completions(
         request,
         body,
