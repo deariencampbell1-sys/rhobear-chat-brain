@@ -4,5 +4,6 @@ httpx==0.28.1
 sentence-transformers==3.3.1
 sqlite-vec==0.1.9
 numpy>=2.2.0
+langfuse>=4.9.0
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.7.0
